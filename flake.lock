@@ -1,0 +1,45 @@
+{
+  "nodes": {
+    "libfprint-master": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776145426,
+        "narHash": "sha256-Ek5MxO+XgTeJ1wty0+WiMf1PUKJTyo/TjIgjWQV8wt8=",
+        "ref": "refs/heads/master",
+        "rev": "d79f157282085738ea8ffbe8c2ae96fb8b3ad831",
+        "revCount": 1850,
+        "type": "git",
+        "url": "https://gitlab.freedesktop.org/libfprint/libfprint.git"
+      },
+      "original": {
+        "rev": "d79f157282085738ea8ffbe8c2ae96fb8b3ad831",
+        "type": "git",
+        "url": "https://gitlab.freedesktop.org/libfprint/libfprint.git"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1791260994,
+        "narHash": "sha256-Miqqk/ammqnTUxaoCyvtwoPeLbI1ksFyLxi/CazZpWY=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "151fa4e8ddfdd8dd25d945ad94ed54a13de9f6e4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "libfprint-master": "libfprint-master",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
