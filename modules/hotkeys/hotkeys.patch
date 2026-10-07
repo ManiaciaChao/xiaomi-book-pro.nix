@@ -1,0 +1,53 @@
+SPDX-License-Identifier: GPL-2.0-only
+
+--- a/redmi-wmi.c
++++ b/redmi-wmi.c
+@@ -20,6 +20,19 @@
+ #define AI_KEY_VALUE_MASK BIT(8)
+ 
+ static const struct key_entry redmi_wmi_keymap[] = {
++	/* Xiaomi Book Pro 14 (TM2424): mic-mute event variants. */
++	{KE_KEY, 0x00002101,	{KEY_MICMUTE}},
++	{KE_KEY, 0x00012101,	{KEY_MICMUTE}},
++
++	/* TM2424 assistant and control-center make/break pairs. */
++	{KE_KEY, 0x00012301,	{KEY_ASSISTANT}},
++	{KE_KEY, 0x00012401,	{KEY_ASSISTANT}},
++	{KE_KEY, 0x00012501,	{KEY_CONTROLPANEL}},
++	{KE_KEY, 0x00012601,	{KEY_CONTROLPANEL}},
++
++	/* TM2424 projection key uses value 0, unlike older models. */
++	{KE_KEY, 0x00000101,	{KEY_SWITCHVIDEOMODE}},
++
+ 	{KE_KEY, 0x00000201,	{KEY_SELECTIVE_SCREENSHOT}},
+ 	{KE_KEY, 0x00000301,	{KEY_ALL_APPLICATIONS}},
+ 	{KE_KEY, 0x00001b01,	{KEY_CONFIG}},
+@@ -116,10 +129,24 @@
+ 		return;
+ 	}
+ 
+-	/* AI key quirk */
+-	if (entry->keycode == KEY_ASSISTANT) {
++	/* TM2424 uses distinct event IDs for make and break, not bit 8. */
++	switch (payload) {
++	case 0x00012301:
++	case 0x00012501:
++		autorelease = false;
++		break;
++	case 0x00012401:
++	case 0x00012601:
++		value = 0;
++		autorelease = false;
++		break;
++	default:
++		/* Preserve the existing AI-key quirk on older machines. */
++		if (entry->keycode == KEY_ASSISTANT) {
+-		value = !(payload & AI_KEY_VALUE_MASK);
+-		autorelease = false;
++			value = !(payload & AI_KEY_VALUE_MASK);
++			autorelease = false;
++		}
++		break;
+ 	}
+ 
+ 	guard(mutex)(&data->key_lock);
