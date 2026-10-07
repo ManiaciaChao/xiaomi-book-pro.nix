@@ -1,0 +1,15 @@
+--- a/hid-multitouch.c
++++ b/hid-multitouch.c
+@@ -891,6 +891,12 @@
+ 			MT_STORE_FIELD(inrange_state);
+ 			return 1;
+ 		case HID_DG_CONFIDENCE:
++			/* BLTP7853: preserve VTL quirks, report firmware palms. */
++			if (td->hdev->bus == BUS_I2C &&
++			    td->hdev->vendor == 0x347d &&
++			    td->hdev->product == 0x7853 &&
++			    field->application == HID_DG_TOUCHPAD)
++				app->quirks |= MT_QUIRK_CONFIDENCE;
+ 			if ((cls->name == MT_CLS_WIN_8 ||
+ 			     cls->name == MT_CLS_WIN_8_FORCE_MULTI_INPUT ||
+ 			     cls->name == MT_CLS_WIN_8_FORCE_MULTI_INPUT_NSMU ||
