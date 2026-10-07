@@ -56,6 +56,10 @@ let
       ];
     }).config;
   defaultProfile = evaluateProfile { enable = true; };
+  bitland = evaluateProfile {
+    enable = true;
+    hotkeys.backend = "bitland";
+  };
   enabled = evaluateProfile {
     enable = true;
     touchpad.mode = "udev";
@@ -108,6 +112,12 @@ assert
   } == psr;
 assert parametersFor "7.2.9" { graphics.psrWorkaround.enable = false; } == [ ];
 assert enabled.services.fprintd.enable;
+assert lib.elem "redmi_wmi" bitland.boot.blacklistedKernelModules;
+assert !lib.elem "bitland_mifs_wmi" bitland.boot.blacklistedKernelModules;
+assert lib.elem "bitland_mifs_wmi" bitland.boot.kernelModules;
+assert !lib.elem "redmi_wmi" bitland.boot.kernelModules;
+assert lib.elem bitland.hardware.xiaomi-book-pro.hotkeys.package bitland.boot.extraModulePackages;
+assert bitland.hardware.xiaomi-book-pro.hotkeys.package.pname == "bitland-mifs-wmi-tm2424";
 assert defaultProfile.hardware.xiaomi-book-pro.touchpad.mode == "driver";
 assert lib.elem defaultProfile.hardware.xiaomi-book-pro.touchpad.package
   defaultProfile.boot.extraModulePackages;

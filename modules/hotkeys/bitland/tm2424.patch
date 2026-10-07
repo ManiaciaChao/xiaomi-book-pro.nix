@@ -1,0 +1,468 @@
+SPDX-License-Identifier: GPL-2.0-or-later
+
+--- a/bitland-mifs-wmi.c
++++ b/bitland-mifs-wmi.c
+@@ -14,6 +14,7 @@
+ #include <linux/dev_printk.h>
+ #include <linux/device.h>
+ #include <linux/device/devres.h>
++#include <linux/dmi.h>
+ #include <linux/err.h>
+ #include <linux/hwmon.h>
+ #include <linux/init.h>
+@@ -159,8 +160,18 @@
+ 	struct device *hwmon_dev;
+ 	struct device *pp_dev;
+ 	enum platform_profile_option saved_profile;
++	bool saved_profile_valid;
++	bool tm2424;
++	u8 saved_tm2424_mode;
++	struct mutex mode_lock;
+ };
+ 
++/* TM2424 encoding documented by the August 2026 machine-specific proposal. */
++static int tm2424_profile_get(struct bitland_mifs_wmi_data *data,
++			      enum platform_profile_option *profile);
++static int tm2424_profile_set(struct bitland_mifs_wmi_data *data,
++			      enum platform_profile_option profile);
++
+ static int bitland_mifs_wmi_call(struct bitland_mifs_wmi_data *data,
+ 				 const struct bitland_mifs_input *input,
+ 				 struct bitland_mifs_output *output)
+@@ -197,6 +208,9 @@
+ 	struct bitland_mifs_output result;
+ 	int ret;
+ 
++	if (data->tm2424)
++		return tm2424_profile_get(data, profile);
++
+ 	ret = bitland_mifs_wmi_call(data, &input, &result);
+ 	if (ret)
+ 		return ret;
+@@ -256,6 +270,9 @@
+ 	int ret;
+ 	u8 val;
+ 
++	if (data->tm2424)
++		return tm2424_profile_set(data, profile);
++
+ 	switch (profile) {
+ 	case PLATFORM_PROFILE_LOW_POWER:
+ 		val = WMI_PP_QUIET;
+@@ -284,11 +301,129 @@
+ 	return bitland_mifs_wmi_call(data, &input, NULL);
+ }
+ 
++static int tm2424_profile_read_raw(struct bitland_mifs_wmi_data *data, u8 *mode)
++{
++	struct bitland_mifs_input input = {
++		.operation = WMI_METHOD_GET,
++		.function = WMI_FN_SYSTEM_PER_MODE,
++	};
++	struct bitland_mifs_output output;
++	int ret;
++
++	ret = bitland_mifs_wmi_call(data, &input, &output);
++	if (ret)
++		return ret;
++
++	if (output.operation != 0x80)
++		return -EOPNOTSUPP;
++
++	*mode = output.data[0];
++	return 0;
++}
++
++static int tm2424_profile_read(struct bitland_mifs_wmi_data *data, u8 *mode)
++{
++	u8 raw;
++	int ret;
++
++	ret = tm2424_profile_read_raw(data, &raw);
++	if (ret)
++		return ret;
++
++	switch (raw) {
++	case 0x02:
++	case 0x0a:
++	case 0x09:
++	case 0x03:
++	case 0x04:
++		*mode = raw;
++		return 0;
++	default:
++		dev_warn_ratelimited(&data->wdev->dev,
++				     "Unknown TM2424 profile %#x\n", raw);
++		return -EINVAL;
++	}
++}
++
++static int tm2424_profile_get(struct bitland_mifs_wmi_data *data,
++			      enum platform_profile_option *profile)
++{
++	u8 mode;
++	int ret;
++
++	ret = tm2424_profile_read(data, &mode);
++	if (ret)
++		return ret;
++
++	switch (mode) {
++	case 0x02: /* Quiet */
++		*profile = PLATFORM_PROFILE_LOW_POWER;
++		break;
++	case 0x09: /* Auto */
++		*profile = PLATFORM_PROFILE_BALANCED;
++		break;
++	case 0x04: /* Full-speed */
++		*profile = PLATFORM_PROFILE_PERFORMANCE;
++		break;
++	case 0x03: /* Turbo */
++	case 0x0a: /* Eco */
++		*profile = PLATFORM_PROFILE_CUSTOM;
++		break;
++	default:
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static int tm2424_profile_write(struct bitland_mifs_wmi_data *data, u8 mode)
++{
++	struct bitland_mifs_input input = {
++		.operation = WMI_METHOD_SET,
++		.function = WMI_FN_SYSTEM_PER_MODE,
++	};
++	struct bitland_mifs_output output;
++	u8 actual;
++	int ret;
++
++	input.payload[0] = mode;
++	/* Serialize mode writers across SET and GET without nesting the WMI lock. */
++	guard(mutex)(&data->mode_lock);
++	ret = bitland_mifs_wmi_call(data, &input, &output);
++	if (ret)
++		return ret;
++
++	/* Status alone may signal success even if the firmware ignored SET. */
++	if (output.operation != 0x80)
++		return -EOPNOTSUPP;
++	ret = tm2424_profile_read(data, &actual);
++	if (ret)
++		return ret;
++	return actual == mode ? 0 : -EIO;
++}
++
++static int tm2424_profile_set(struct bitland_mifs_wmi_data *data,
++			      enum platform_profile_option profile)
++{
++	switch (profile) {
++	case PLATFORM_PROFILE_LOW_POWER:
++		return tm2424_profile_write(data, 0x02);
++	case PLATFORM_PROFILE_BALANCED:
++		return tm2424_profile_write(data, 0x09);
++	case PLATFORM_PROFILE_PERFORMANCE:
++		return tm2424_profile_write(data, 0x04);
++	default:
++		return -EOPNOTSUPP;
++	}
++}
++
+ static int platform_profile_probe(void *drvdata, unsigned long *choices)
+ {
++	struct bitland_mifs_wmi_data *data = drvdata;
++
+ 	set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
+ 	set_bit(PLATFORM_PROFILE_BALANCED, choices);
+-	set_bit(PLATFORM_PROFILE_BALANCED_PERFORMANCE, choices);
++	if (!data->tm2424)
++		set_bit(PLATFORM_PROFILE_BALANCED_PERFORMANCE, choices);
+ 	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
+ 
+ 	return 0;
+@@ -304,9 +439,20 @@
+ 	if (!data->pp_dev)
+ 		return 0;
+ 
++	data->saved_profile_valid = false;
+-	ret = laptop_profile_get(data->pp_dev, &profile);
++	if (data->tm2424)
++		ret = tm2424_profile_read(data, &data->saved_tm2424_mode);
++	else
++		ret = laptop_profile_get(data->pp_dev, &profile);
+-	if (ret == 0)
++	if (ret == 0) {
+-		data->saved_profile = profile;
++		if (!data->tm2424)
++			data->saved_profile = profile;
++		data->saved_profile_valid = true;
++	}
++	if (data->tm2424 && ret) {
++		dev_warn(dev, "Profile save failed (%d); continuing suspend without restore\n", ret);
++		return 0;
++	}
+ 
+ 	return ret;
+ }
+@@ -314,13 +460,24 @@
+ static int bitland_mifs_wmi_resume(struct device *dev)
+ {
+ 	struct bitland_mifs_wmi_data *data = dev_get_drvdata(dev);
++	int ret;
+ 
+ 	/* Skip event device */
+ 	if (!data->pp_dev)
+ 		return 0;
+ 
++	if (data->tm2424 && !data->saved_profile_valid)
++		return 0;
+-	dev_dbg(dev, "Resuming, restoring profile %d\n", data->saved_profile);
+-	return laptop_profile_set(dev, data->saved_profile);
++	if (data->tm2424)
++		/* Restore the exact firmware mode, not its lossy Linux alias. */
++		ret = tm2424_profile_write(data, data->saved_tm2424_mode);
++	else
++		ret = laptop_profile_set(data->pp_dev, data->saved_profile);
++	if (data->tm2424 && ret) {
++		dev_warn(dev, "Profile restore failed (%d); continuing resume\n", ret);
++		return 0;
++	}
++	return ret;
+ }
+ 
+ static DEFINE_SIMPLE_DEV_PM_OPS(bitland_mifs_wmi_pm_ops,
+@@ -607,6 +764,77 @@
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(laptop);
+ 
++static const char *const tm2424_mode_names[] = {
++	"quiet", "turbo", "full-speed", "auto", "eco",
++};
++static const u8 tm2424_mode_values[] = { 0x02, 0x03, 0x04, 0x09, 0x0a };
++
++static ssize_t performance_mode_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct bitland_mifs_wmi_data *data = dev_get_drvdata(dev);
++	u8 mode;
++	int ret;
++
++	ret = tm2424_profile_read(data, &mode);
++	if (ret)
++		return ret;
++	for (int i = 0; i < ARRAY_SIZE(tm2424_mode_values); i++)
++		if (tm2424_mode_values[i] == mode)
++			return sysfs_emit(buf, "%s\n", tm2424_mode_names[i]);
++	return -EINVAL;
++}
++
++static ssize_t performance_mode_store(struct device *dev,
++				      struct device_attribute *attr,
++				      const char *buf, size_t count)
++{
++	struct bitland_mifs_wmi_data *data = dev_get_drvdata(dev);
++	int index, ret;
++
++	index = sysfs_match_string(tm2424_mode_names, buf);
++	if (index < 0)
++		return index;
++	ret = tm2424_profile_write(data, tm2424_mode_values[index]);
++	if (ret)
++		return ret;
++	platform_profile_notify(data->pp_dev);
++	return count;
++}
++
++static ssize_t performance_mode_available_show(struct device *dev,
++					       struct device_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "quiet turbo full-speed auto eco\n");
++}
++
++static ssize_t performance_mode_raw_show(struct device *dev,
++					 struct device_attribute *attr, char *buf)
++{
++	struct bitland_mifs_wmi_data *data = dev_get_drvdata(dev);
++	u8 mode;
++	int ret;
++
++	ret = tm2424_profile_read_raw(data, &mode);
++	if (ret)
++		return ret;
++	return sysfs_emit(buf, "0x%02x\n", mode);
++}
++
++static DEVICE_ATTR_RW(performance_mode);
++static DEVICE_ATTR_RO(performance_mode_available);
++static DEVICE_ATTR_RO(performance_mode_raw);
++
++static struct attribute *tm2424_mode_attrs[] = {
++	&dev_attr_performance_mode.attr,
++	&dev_attr_performance_mode_available.attr,
++	&dev_attr_performance_mode_raw.attr,
++	NULL,
++};
++static const struct attribute_group tm2424_mode_group = {
++	.attrs = tm2424_mode_attrs,
++};
++
+ static const struct key_entry bitland_mifs_wmi_keymap[] = {
+ 	{ KE_KEY, WMI_EVENT_OPEN_APP, { KEY_PROG1 } },
+@@ -630,6 +858,57 @@
+ 	blocking_notifier_chain_unregister(&bitland_notifier_list, nb);
+ }
+ 
++/* Packed little-endian event_type/id/value_low/value_high, matching redmi-wmi. */
++static const struct key_entry tm2424_keymap[] = {
++	{ KE_KEY, 0x00002101, { KEY_MICMUTE } },
++	{ KE_KEY, 0x00012101, { KEY_MICMUTE } },
++	{ KE_KEY, 0x00012301, { KEY_ASSISTANT } },
++	{ KE_KEY, 0x00012401, { KEY_ASSISTANT } },
++	{ KE_KEY, 0x00012501, { KEY_CONTROLPANEL } },
++	{ KE_KEY, 0x00012601, { KEY_CONTROLPANEL } },
++	{ KE_KEY, 0x00000101, { KEY_SWITCHVIDEOMODE } },
++	{ KE_KEY, 0x00001b01, { KEY_CONFIG } },
++	{ KE_KEY, 0x00011b01, { KEY_CONFIG } },
++	{ KE_END, 0 }
++};
++
++static bool tm2424_report_hotkey(struct bitland_mifs_wmi_data *data, u32 code)
++{
++	const struct key_entry *entry;
++	bool autorelease = true;
++	int value = 1;
++
++	entry = sparse_keymap_entry_from_scancode(data->input_dev, code);
++	if (!entry)
++		return false;
++
++	switch (code) {
++	case 0x00012301:
++	case 0x00012501:
++		autorelease = false;
++		break;
++	case 0x00012401:
++	case 0x00012601:
++		value = 0;
++		autorelease = false;
++		break;
++	}
++	guard(mutex)(&data->lock);
++	sparse_keymap_report_entry(data->input_dev, entry, value, autorelease);
++	return true;
++}
++
++static bool tm2424_notify_profile_change(struct bitland_mifs_wmi_data *data,
++					 u8 event_id)
++{
++	/* TM2424 QV20 reports performance-mode changes as 0x16, not 0x0f. */
++	if (!data->tm2424 || event_id != 0x16)
++		return false;
++	blocking_notifier_call_chain(&bitland_notifier_list,
++				     BITLAND_NOTIFY_PLATFORM_PROFILE, NULL);
++	return true;
++}
++
+ static int bitland_notifier_callback(struct notifier_block *nb,
+ 				     unsigned long action, void *data)
+ {
+@@ -640,6 +919,8 @@
+ 
+ 	switch (action) {
+ 	case BITLAND_NOTIFY_KBD_BRIGHTNESS:
++		if (data_ctx->tm2424)
++			break;
+ 		brightness = data;
+ 		led_classdev_notify_brightness_hw_changed(&data_ctx->kbd_led,
+ 							  *brightness);
+@@ -648,6 +929,8 @@
+ 		platform_profile_notify(data_ctx->pp_dev);
+ 		break;
+ 	case BITLAND_NOTIFY_HWMON:
++		if (data_ctx->tm2424)
++			break;
+ 		fan_info = data;
+ 
+ 		hwmon_notify_event(data_ctx->hwmon_dev, hwmon_fan,
+@@ -675,6 +958,8 @@
+ 		return -ENOMEM;
+ 
+ 	drv_data->wdev = wdev;
++	drv_data->tm2424 = dmi_match(DMI_SYS_VENDOR, "XIAOMI") &&
++			    dmi_match(DMI_BOARD_NAME, "TM2424");
+ 
+ 	ret = devm_mutex_init(&wdev->dev, &drv_data->lock);
+ 	if (ret)
+@@ -681,6 +966,10 @@
+ 		return ret;
+ 
++	ret = devm_mutex_init(&wdev->dev, &drv_data->mode_lock);
++	if (ret)
++		return ret;
++
+ 	dev_set_drvdata(&wdev->dev, drv_data);
+ 
+ 	if (dev_type == BITLAND_WMI_EVENT) {
+ 		/* Register input device for hotkeys */
+@@ -694,6 +983,7 @@
+ 		drv_data->input_dev->dev.parent = &wdev->dev;
+ 
+ 		ret = sparse_keymap_setup(drv_data->input_dev,
++					  drv_data->tm2424 ? tm2424_keymap :
+ 					  bitland_mifs_wmi_keymap, NULL);
+ 		if (ret)
+ 			return ret;
+@@ -707,6 +997,18 @@
+ 	if (IS_ERR(drv_data->pp_dev))
+ 		return PTR_ERR(drv_data->pp_dev);
+ 
++	/* TM2424 firmware does not implement the generic hwmon/RGB/GPU API. */
++	if (drv_data->tm2424) {
++		ret = devm_device_add_group(&wdev->dev, &tm2424_mode_group);
++		if (ret)
++			return ret;
++		goto register_notifier;
++	}
++
++	ret = devm_device_add_group(&wdev->dev, laptop_groups[0]);
++	if (ret)
++		return ret;
++
+ 	/* Register hwmon */
+ 	drv_data->hwmon_dev = devm_hwmon_device_register_with_info(&wdev->dev,
+ 								   "bitland_mifs",
+@@ -728,6 +1030,7 @@
+ 	if (ret)
+ 		return ret;
+ 
++register_notifier:
+ 	drv_data->notifier.notifier_call = bitland_notifier_callback;
+ 	ret = blocking_notifier_chain_register(&bitland_notifier_list, &drv_data->notifier);
+ 	if (ret)
+@@ -750,6 +1053,12 @@
+ 	if (event->event_type != WMI_EVENT_TYPE_HOTKEY)
+ 		return;
+ 
++	if (data->tm2424 && tm2424_report_hotkey(data, get_unaligned_le32(buffer->data)))
++		return;
++
++	if (tm2424_notify_profile_change(data, event->event_id))
++		return;
++
+ 	dev_dbg(&wdev->dev,
+ 		"WMI event: id=0x%02x value_low=0x%02x value_high=0x%02x\n",
+ 		event->event_id, event->value_low, event->value_high);
+@@ -829,11 +1138,10 @@
+ 	.no_singleton = true,
+ 	.driver = {
+ 		.name = DRV_NAME,
+-		.dev_groups = laptop_groups,
+ 		.pm = pm_sleep_ptr(&bitland_mifs_wmi_pm_ops),
+ 	},
+ 	.id_table = bitland_mifs_wmi_id_table,
+-	.min_event_size = sizeof(struct bitland_mifs_event),
++	.min_event_size = sizeof(u32), /* Only the four event bytes are consumed. */
+ 	.probe = bitland_mifs_wmi_probe,
+ 	.notify_new = bitland_mifs_wmi_notify,
+ };

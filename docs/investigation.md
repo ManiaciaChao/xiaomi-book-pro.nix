@@ -77,7 +77,10 @@ microphone uncertainties, verification steps and upstream patch links.
 WIP: the base Bitland driver is already upstream, but the v9 consolidation
 does not include all TM2424 key mappings. Keep the minimal redmi-wmi fix until
 a complete adaptation can replace it, and remove the blacklist at migration.
-Hardware performance-profile control is intentionally not part of this profile.
+The default Redmi backend does not provide performance-profile control. An
+experimental `hotkeys.backend = "bitland"` now adds local TM2424 hotkey and
+performance-profile adaptation; see [bitland.md](bitland.md) for initial
+runtime results and remaining test coverage. The adaptation is not upstream.
 
 ## Test scope
 

@@ -20,6 +20,7 @@
       };
       hotkeys = pkgs.linuxPackages_latest.callPackage ./modules/hotkeys/package.nix { };
       touchpad = pkgs.linuxPackages_latest.callPackage ./modules/touchpad/package.nix { };
+      bitland = pkgs.linuxPackages_latest.callPackage ./modules/hotkeys/bitland/package.nix { };
     in
     {
       nixosModules = {
@@ -30,11 +31,12 @@
         libfprintSource = inputs.libfprint-master;
       };
       packages.${system} = {
-        inherit hotkeys touchpad;
+        inherit hotkeys touchpad bitland;
         default = hotkeys;
       };
       checks.${system} = {
-        inherit hotkeys touchpad;
+        inherit hotkeys touchpad bitland;
+        bitland-behavior = import ./tests/bitland.nix { inherit pkgs bitland; };
         module-evaluation = import ./tests {
           inherit nixpkgs pkgs tm2424;
         };

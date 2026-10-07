@@ -4,8 +4,9 @@ NixOS hardware support for **Xiaomi Book Pro 14 (2026), board TM2424**.
 Extracted from a working personal NixOS configuration. This is a hardware
 compatibility profile, not a desktop setup or an installer.
 
-**WIP:** replace the standalone `redmi-wmi` module with upstream
-`bitland-mifs-wmi` once the complete TM2424 hotkey adaptation is available.
+**WIP:** the experimental Bitland backend adds local TM2424 hotkey and
+platform-profile adaptation. The stable default remains `redmi-wmi` until
+the Bitland backend has broader runtime coverage and the adaptation is upstream.
 See [the hotkey investigation](docs/hotkeys.md) and
 [the hardware notes](docs/investigation.md).
 
@@ -88,8 +89,8 @@ original host's configuration. It is not intended to support unrelated external
 fingerprint readers. `overlays.default` exports the same overlay for users who
 want only the package override without enabling the hardware profile.
 
-The hotkey group blacklists `bitland_mifs_wmi` to prevent competition for the
-shared WMI event device. Disabling the group removes that blacklist. Secure Boot
+The hotkey group blacklists the unselected backend to prevent competition for
+the shared WMI event device. Disabling the group removes that blacklist. Secure Boot
 module-signature enforcement may require signing the replacement separately.
 
 ## Touchpad confidence modes
@@ -116,6 +117,41 @@ be replaced with this standalone module. Module-signature enforcement may
 require signing it separately. Reboot to test; avoid unloading a live touchpad
 driver. Improved stuck-contact behavior is a hypothesis, not yet runtime-verified.
 Build the standalone replacement with `nix build .#touchpad`.
+
+## Experimental Bitland WMI backend
+
+```nix
+hardware.xiaomi-book-pro.hotkeys.backend = "bitland"; # default: "redmi"
+```
+
+This builds only `bitland-mifs-wmi.ko` for the consumer's selected kernel and
+blacklists `redmi_wmi`. It preserves the assistant/control-center make/break
+events and semantic keycodes, adds the microphone/projection/settings mappings,
+and exposes TM2424-specific platform profiles. Adaptation is gated by DMI
+vendor `XIAOMI` and board `TM2424`.
+
+The TM2424 profile-save callback no longer aborts suspend if firmware mode
+reading fails. Restore is skipped when no valid mode was saved. No unbind/rebind
+sleep hook or hard-coded WMI device suffix is needed for this failure path.
+Initial lid-triggered s2idle suspend/resume passed in Quiet and Turbo on the
+tested unit. This does not establish reliability on other firmware or fix
+missing lid events or other ACPI firmware problems.
+
+Standard Linux modes map to Quiet / Auto / Full-speed. Native Xiaomi modes
+are selectable through the control WMI device's `performance_mode` sysfs
+attribute; `performance_mode_available` and `performance_mode_raw` expose
+recognized names and the current raw byte. No CLI is installed. Native writes
+do not change Intel Slider; Turbo/Eco appear as `custom` in the standard
+interface. All mode writes verify GET readback and never silently fall back
+to a different mode. See the Bitland notes for examples and error caveats.
+
+Requires `CONFIG_BITLAND_MIFS_WMI=m`. The local patch is tested against Linux
+7.2.9; other source revisions may need rebasing. See
+[Bitland investigation and runtime checks](docs/bitland.md).
+
+```sh
+nix build .#bitland
+```
 
 ## Kept in the consumer
 
@@ -156,5 +192,7 @@ Do not update unrelated inputs just to refresh this profile.
 
 ## Licensing
 
-This repository's Nix configuration, tests, documentation and kernel patch
-are licensed under GPL-2.0-only. See [LICENSE](LICENSE) for the full text.
+This repository's Nix configuration, tests and documentation are licensed
+under GPL-2.0-only. The Bitland patch retains its upstream driver's
+GPL-2.0-or-later licensing; other kernel patches are GPL-2.0-only.
+See [LICENSE](LICENSE) for the GPL version 2 text.
